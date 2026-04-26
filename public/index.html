@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Grand Chess</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script defer src="https://cdn.jsdelivr.net/npm/chess.js@1.4.0/dist/chess.min.js"></script>
+    <script defer src="/app.js"></script>
+  </head>
+  <body>
+    <header>
+      <h1>♟ Grand Chess: Interview Edition</h1>
+      <div class="controls">
+        <button id="themeBtn">🌙 / ☀️ Theme</button>
+        <button id="upgradeBtn">Upgrade to Pro</button>
+      </div>
+    </header>
+
+    <section id="authPanel" class="card">
+      <h2>Start in 10 seconds</h2>
+      <input id="nameInput" placeholder="Name" />
+      <input id="cityInput" placeholder="City (for leaderboard)" />
+      <button id="loginBtn">Enter Platform</button>
+      <p id="authStatus"></p>
+    </section>
+
+    <main class="layout hidden" id="app">
+      <section class="card">
+        <h3>Game Modes</h3>
+        <div class="mode-grid">
+          <button data-mode="local">Local 1v1</button>
+          <button data-mode="ai">Play vs AI</button>
+          <button id="createRoomBtn">Create friend room</button>
+        </div>
+        <p id="roomStatus"></p>
+        <label>Join room by link/code</label>
+        <input id="roomInput" placeholder="room-id" />
+        <button id="joinRoomBtn">Join Room</button>
+      </section>
+
+      <section class="card board-card">
+        <div id="status"></div>
+        <div id="board" class="board"></div>
+        <div class="actions">
+          <button id="resetBtn">New game</button>
+          <button id="saveBtn">Save game</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h3>AI Coach</h3>
+        <p>After game end, AI gives your top mistakes and better candidate moves.</p>
+        <ul id="coachList"></ul>
+      </section>
+
+      <section class="card">
+        <h3>Interview Drill Niche</h3>
+        <p>Solve under pressure: make your move before timer hits zero.</p>
+        <button id="drillBtn">Start 60s Drill</button>
+        <p id="drillStatus">Not started</p>
+      </section>
+
+      <section class="card">
+        <h3>Global leaderboard by city</h3>
+        <button id="refreshBoardBtn">Refresh</button>
+        <ol id="leaderboard"></ol>
+      </section>
+
+      <section class="card">
+        <h3>Your match history</h3>
+        <ul id="history"></ul>
+      </section>
+    </main>
+  </body>
+</html>
