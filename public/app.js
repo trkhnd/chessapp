@@ -1,302 +1,447 @@
-/* global Chess */
-const boardEl = document.getElementById('board');
-const statusEl = document.getElementById('status');
-const coachList = document.getElementById('coachList');
-const historyEl = document.getElementById('history');
-const leaderboardEl = document.getElementById('leaderboard');
-
-let game = new Chess();
-let selectedSquare = null;
-let token = localStorage.getItem('token') || '';
-let user = JSON.parse(localStorage.getItem('user') || 'null');
-let mode = 'local';
-let ws = null;
-let roomId = null;
-let moveAudit = [];
-
-const pieceMap = {
+const pieceChars = {
   p: '♟', r: '♜', n: '♞', b: '♝', q: '♛', k: '♚',
   P: '♙', R: '♖', N: '♘', B: '♗', Q: '♕', K: '♔'
 };
 
-function evaluate(chess) {
-  const values = { p: 1, n: 3, b: 3.2, r: 5, q: 9, k: 0 };
-  return chess.board().flat().reduce((sum, p) => {
-    if (!p) return sum;
-    const value = values[p.type] || 0;
-    return sum + (p.color === 'w' ? value : -value);
-  }, 0);
+const valueByPiece = { p: 1, n: 3, b: 3, r: 5, q: 9, k: 0 };
+const savedTheme = localStorage.getItem('theme') || 'dark';
+document.documentElement.dataset.theme = savedTheme;
+
+const state = {
+  token: localStorage.getItem('token') || '',
+  user: null,
+  game: null,
+  selected: null,
+  mode: 'local',
+  ws: null,
+  roomId: '',
+  drillDeadline: 0,
+  drillInterval: null,
+  lastMoveAt: Date.now(),
+  aiThinking: false
+};
+
+const el = {
+  authPanel: document.getElementById('authPanel'),
+  app: document.getElementById('app'),
+  status: document.getElementById('status'),
+  board: document.getElementById('board'),
+  loginBtn: document.getElementById('loginBtn'),
+  nameInput: document.getElementById('nameInput'),
+  cityInput: document.getElementById('cityInput'),
+  authStatus: document.getElementById('authStatus'),
+  themeBtn: document.getElementById('themeBtn'),
+  upgradeBtn: document.getElementById('upgradeBtn'),
+  resetBtn: document.getElementById('resetBtn'),
+  saveBtn: document.getElementById('saveBtn'),
+  roomStatus: document.getElementById('roomStatus'),
+  roomInput: document.getElementById('roomInput'),
+  createRoomBtn: document.getElementById('createRoomBtn'),
+  joinRoomBtn: document.getElementById('joinRoomBtn'),
+  coachList: document.getElementById('coachList'),
+  history: document.getElementById('history'),
+  refreshBoardBtn: document.getElementById('refreshBoardBtn'),
+  leaderboard: document.getElementById('leaderboard'),
+  drillBtn: document.getElementById('drillBtn'),
+  drillStatus: document.getElementById('drillStatus')
+};
+
+
+async function ensureChessLoaded() {
+  if (typeof Chess !== 'undefined') return true;
+
+  const sources = [
+    'https://cdn.jsdelivr.net/npm/chess.js@1.4.0/dist/chess.min.js',
+    'https://unpkg.com/chess.js@1.4.0/dist/chess.min.js'
+  ];
+
+  for (const src of sources) {
+    try {
+      await new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = src;
+        script.onload = resolve;
+        script.onerror = reject;
+        document.head.appendChild(script);
+      });
+      if (typeof Chess !== 'undefined') return true;
+    } catch {
+      // try next source
+    }
+  }
+  return false;
 }
 
-function pickBestMove(chess, depth = 2, isMax = chess.turn() === 'w') {
-  if (depth === 0 || chess.isGameOver()) return { score: evaluate(chess) };
+function ensureGame() {
+  if (!state.game && typeof Chess !== 'undefined') {
+    state.game = new Chess();
+  }
+  return !!state.game;
+}
 
-  const moves = chess.moves({ verbose: true });
-  let best = { score: isMax ? -Infinity : Infinity, move: null };
+async function api(path, opts = {}) {
+  const headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) };
+  if (state.token) headers.Authorization = `Bearer ${state.token}`;
+  const res = await fetch(path, { ...opts, headers });
+  if (!res.ok) {
+    const msg = (await res.json().catch(() => ({}))).error || res.statusText;
+    throw new Error(msg);
+  }
+  return res.json();
+}
 
-  for (const move of moves) {
-    chess.move(move);
-    const probe = pickBestMove(chess, depth - 1, !isMax);
-    chess.undo();
+function renderBoard() {
+  if (!ensureGame()) {
+    el.status.textContent = "Chess engine failed to load. Please open via npm start and http://localhost:3000";
+    return;
+  }
+  const board = state.game.board();
+  el.board.innerHTML = '';
 
-    if (isMax ? probe.score > best.score : probe.score < best.score) {
-      best = { score: probe.score, move };
+  board.forEach((rank, rankIndex) => {
+    rank.forEach((piece, fileIndex) => {
+      const sq = `${String.fromCharCode(97 + fileIndex)}${8 - rankIndex}`;
+      const cell = document.createElement('button');
+      cell.className = `sq ${(rankIndex + fileIndex) % 2 ? 'dark' : 'light'}`;
+      if (state.selected === sq) cell.classList.add('selected');
+
+      const legalTargets = state.selected ? state.game.moves({ square: state.selected, verbose: true }).map(m => m.to) : [];
+      if (legalTargets.includes(sq)) cell.classList.add('hint');
+
+      cell.dataset.square = sq;
+      cell.textContent = piece ? pieceChars[piece.color === 'w' ? piece.type.toUpperCase() : piece.type] : '';
+      cell.addEventListener('click', () => onSquareClick(sq));
+      el.board.appendChild(cell);
+    });
+  });
+  renderStatus();
+}
+
+function renderStatus() {
+  let text = `Mode: ${state.mode.toUpperCase()} · Turn: ${state.game.turn() === 'w' ? 'White' : 'Black'}`;
+  if (state.game.inCheck()) text += ' · Check!';
+  if (state.game.isGameOver()) {
+    if (state.game.isCheckmate()) text = `Checkmate! ${state.game.turn() === 'w' ? 'Black' : 'White'} wins.`;
+    else if (state.game.isStalemate()) text = 'Stalemate.';
+    else if (state.game.isDraw()) text = 'Draw.';
+  }
+  el.status.textContent = text;
+}
+
+function onSquareClick(square) {
+  if (state.aiThinking) return;
+  if (state.game.isGameOver()) return;
+
+  const piece = state.game.get(square);
+  const canPick = piece && piece.color === state.game.turn();
+
+  if (!state.selected) {
+    if (canPick) state.selected = square;
+    renderBoard();
+    return;
+  }
+
+  const move = tryMove(state.selected, square);
+  if (!move && canPick) {
+    state.selected = square;
+    renderBoard();
+    return;
+  }
+  state.selected = null;
+  renderBoard();
+}
+
+function maybePromotion(from, to) {
+  const piece = state.game.get(from);
+  if (!piece || piece.type !== 'p') return undefined;
+  if ((piece.color === 'w' && to.endsWith('8')) || (piece.color === 'b' && to.endsWith('1'))) return 'q';
+  return undefined;
+}
+
+function tryMove(from, to, skipBroadcast = false) {
+  const promotion = maybePromotion(from, to);
+  const move = state.game.move({ from, to, promotion });
+  if (!move) return null;
+  state.lastMoveAt = Date.now();
+
+  if (!skipBroadcast && state.ws && state.ws.readyState === 1) {
+    state.ws.send(JSON.stringify({ type: 'move', move: { from, to, promotion } }));
+  }
+
+  renderBoard();
+
+  if (state.mode === 'ai' && !state.game.isGameOver() && state.game.turn() === 'b') {
+    setTimeout(makeAiMove, 200);
+  }
+
+  if (state.game.isGameOver()) {
+    showCoach();
+  }
+
+  return move;
+}
+
+function scoreBoard(game) {
+  let score = 0;
+  const b = game.board();
+  for (const rank of b) {
+    for (const p of rank) {
+      if (!p) continue;
+      const val = valueByPiece[p.type] || 0;
+      score += p.color === 'w' ? val : -val;
+    }
+  }
+  return score;
+}
+
+function pickAiMove() {
+  const moves = state.game.moves({ verbose: true });
+  if (!moves.length) return null;
+
+  let best = moves[0];
+  let bestScore = Infinity;
+
+  for (const mv of moves) {
+    const g = new Chess(state.game.fen());
+    g.move(mv);
+    if (g.isCheckmate()) return mv;
+
+    const replies = g.moves({ verbose: true });
+    let worstReplyScore = -Infinity;
+    for (const rep of replies) {
+      const gg = new Chess(g.fen());
+      gg.move(rep);
+      worstReplyScore = Math.max(worstReplyScore, scoreBoard(gg));
+    }
+
+    const score = replies.length ? worstReplyScore : scoreBoard(g);
+    if (score < bestScore) {
+      bestScore = score;
+      best = mv;
     }
   }
   return best;
 }
 
-function analyzeMistakes() {
-  coachList.innerHTML = '';
-  const ranked = moveAudit
-    .filter((m) => Math.abs(m.delta) > 1.5)
-    .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta))
-    .slice(0, 3);
-
-  if (!ranked.length) {
-    coachList.innerHTML = '<li>Great discipline: no major blunders detected.</li>';
-    return [];
+function makeAiMove() {
+  state.aiThinking = true;
+  const move = pickAiMove();
+  if (move) {
+    state.game.move({ from: move.from, to: move.to, promotion: move.promotion || 'q' });
   }
+  state.aiThinking = false;
+  renderBoard();
+  if (state.game.isGameOver()) showCoach();
+}
 
-  const mistakes = ranked.map((item, idx) => {
-    const text = `#${idx + 1}: Move ${item.played} caused eval swing ${item.delta.toFixed(2)}. Try ${item.suggested} instead.`;
+function showCoach() {
+  const list = analyzeMistakes(state.game.history({ verbose: true }));
+  el.coachList.innerHTML = '';
+  if (!list.length) {
+    el.coachList.innerHTML = '<li>Solid game. No major blunders found by lightweight coach.</li>';
+    return;
+  }
+  for (const item of list.slice(0, 4)) {
     const li = document.createElement('li');
-    li.textContent = text;
-    coachList.appendChild(li);
-    return text;
-  });
-  return mistakes;
+    li.textContent = `${item.side}: ${item.note}`;
+    el.coachList.appendChild(li);
+  }
 }
 
-function drawBoard() {
-  boardEl.innerHTML = '';
-  const squares = game.board();
+function analyzeMistakes(history) {
+  const notes = [];
+  const game = new Chess();
 
-  for (let r = 0; r < 8; r++) {
-    for (let c = 0; c < 8; c++) {
-      const sq = document.createElement('div');
-      const squareName = 'abcdefgh'[c] + (8 - r);
-      sq.className = `square ${(r + c) % 2 ? 'dark' : 'light'}`;
-      if (selectedSquare === squareName) sq.classList.add('selected');
-      sq.dataset.square = squareName;
-      const piece = squares[r][c];
-      if (piece) sq.textContent = pieceMap[piece.color === 'w' ? piece.type.toUpperCase() : piece.type];
-      sq.addEventListener('click', onSquareClick);
-      boardEl.appendChild(sq);
+  history.forEach((mv, idx) => {
+    const before = scoreBoard(game);
+    game.move(mv);
+    const after = scoreBoard(game);
+    const delta = after - before;
+
+    if (mv.color === 'w' && delta < -2) {
+      notes.push({ side: 'White', note: `${idx + 1}. ${mv.san} dropped material (~${Math.abs(delta).toFixed(1)}).` });
     }
-  }
-
-  const turn = game.turn() === 'w' ? 'White' : 'Black';
-  let text = `${turn} to move`;
-  if (game.isCheckmate()) text = `Checkmate! ${turn === 'White' ? 'Black' : 'White'} won`;
-  if (game.isDraw()) text = 'Draw';
-  statusEl.textContent = `${text} (${mode})`;
-}
-
-function attemptMove(from, to, promotion = 'q') {
-  const before = evaluate(game);
-  const best = pickBestMove(game, 1).move;
-  const move = game.move({ from, to, promotion });
-  if (!move) return null;
-
-  const after = evaluate(game);
-  moveAudit.push({
-    played: `${from}-${to}`,
-    delta: after - before,
-    suggested: best ? `${best.from}-${best.to}` : 'n/a'
-  });
-
-  drawBoard();
-
-  if (ws && roomId) {
-    ws.send(JSON.stringify({ type: 'move', fen: game.fen(), from, to }));
-  }
-
-  if (mode === 'ai' && !game.isGameOver() && game.turn() === 'b') {
-    setTimeout(() => {
-      const ai = pickBestMove(game, 2, false).move;
-      if (ai) {
-        game.move(ai);
-        drawBoard();
-      }
-      if (game.isGameOver()) {
-        analyzeMistakes();
-      }
-    }, 200);
-  }
-
-  if (game.isGameOver()) analyzeMistakes();
-  return move;
-}
-
-function onSquareClick(e) {
-  const sq = e.currentTarget.dataset.square;
-  if (!selectedSquare) {
-    selectedSquare = sq;
-    drawBoard();
-    return;
-  }
-
-  if (selectedSquare === sq) {
-    selectedSquare = null;
-    drawBoard();
-    return;
-  }
-
-  const result = attemptMove(selectedSquare, sq);
-  selectedSquare = null;
-  if (!result) drawBoard();
-}
-
-async function api(path, opts = {}) {
-  const res = await fetch(path, {
-    ...opts,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(opts.headers || {}),
-      ...(token ? { Authorization: `Bearer ${token}` } : {})
+    if (mv.color === 'b' && delta > 2) {
+      notes.push({ side: 'Black', note: `${idx + 1}. ${mv.san} dropped material (~${Math.abs(delta).toFixed(1)}).` });
     }
   });
-  return res.json();
+
+  return notes;
 }
 
-function openSocket(id) {
-  roomId = id;
-  ws = new WebSocket(`${location.origin.replace('http', 'ws')}/ws?room=${id}&token=${token}`);
+function setMode(mode) {
+  state.mode = mode;
+  if (!ensureGame()) return;
+  state.game = new Chess();
+  state.selected = null;
+  renderBoard();
+  el.roomStatus.textContent = `Mode set to ${mode}`;
+}
+
+function connectRoom(roomId) {
+  if (!state.token) return;
+  if (state.ws) state.ws.close();
+  state.roomId = roomId;
+  const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
+  const ws = new WebSocket(`${protocol}://${location.host}/ws?room=${roomId}&token=${state.token}`);
+  state.ws = ws;
+  state.mode = 'multiplayer';
+
+  ws.onopen = () => {
+    el.roomStatus.textContent = `Connected to room ${roomId}. Share this code.`;
+    history.replaceState({}, '', `${location.pathname}?room=${roomId}`);
+  };
+
   ws.onmessage = (event) => {
     const msg = JSON.parse(event.data);
-    if (msg.type === 'move' && msg.fen) {
-      game.load(msg.fen);
-      drawBoard();
+    if (msg.type === 'move' && msg.move) {
+      tryMove(msg.move.from, msg.move.to, true);
     }
     if (msg.type === 'peer_joined') {
-      document.getElementById('roomStatus').textContent = `${msg.user} joined room ${id}`;
+      el.roomStatus.textContent = `${msg.user} joined your room.`;
     }
+  };
+
+  ws.onclose = () => {
+    el.roomStatus.textContent = 'Room connection closed';
   };
 }
 
-document.getElementById('themeBtn').addEventListener('click', () => {
-  document.body.classList.toggle('dark');
-});
+function startDrill(seconds = 60) {
+  clearInterval(state.drillInterval);
+  state.drillDeadline = Date.now() + seconds * 1000;
+  state.lastMoveAt = Date.now();
+  state.drillStatus.textContent = `Drill running: ${seconds}s`;
 
-document.getElementById('loginBtn').addEventListener('click', async () => {
-  const name = document.getElementById('nameInput').value || 'Player';
-  const city = document.getElementById('cityInput').value || 'Unknown';
-  const data = await api('/api/auth/guest', { method: 'POST', body: JSON.stringify({ name, city }) });
-  token = data.token;
-  user = data.user;
-  localStorage.setItem('token', token);
-  localStorage.setItem('user', JSON.stringify(user));
-  document.getElementById('authStatus').textContent = `Welcome ${user.name} from ${user.city}`;
-  document.getElementById('authPanel').classList.add('hidden');
-  document.getElementById('app').classList.remove('hidden');
-  await loadHistory();
-  await loadLeaderboard();
-});
+  state.drillInterval = setInterval(() => {
+    const left = Math.max(0, Math.ceil((state.drillDeadline - Date.now()) / 1000));
+    el.drillStatus.textContent = `Time left: ${left}s`;
 
-document.querySelectorAll('[data-mode]').forEach((btn) => {
-  btn.addEventListener('click', () => {
-    mode = btn.dataset.mode;
-    game = new Chess();
-    moveAudit = [];
-    drawBoard();
-  });
-});
+    if (Date.now() - state.lastMoveAt > 12000) {
+      el.drillStatus.textContent = 'Timeout pressure! Make a move every 12s.';
+    }
 
-document.getElementById('createRoomBtn').addEventListener('click', () => {
-  const id = crypto.randomUUID().slice(0, 8);
-  const share = `${location.origin}?room=${id}`;
-  document.getElementById('roomStatus').textContent = `Share with friend: ${share}`;
-  navigator.clipboard.writeText(share).catch(() => {});
-  mode = 'multiplayer';
-  openSocket(id);
-});
-
-document.getElementById('joinRoomBtn').addEventListener('click', () => {
-  const id = document.getElementById('roomInput').value.trim();
-  if (!id) return;
-  mode = 'multiplayer';
-  openSocket(id);
-  document.getElementById('roomStatus').textContent = `Joined room ${id}`;
-});
-
-document.getElementById('resetBtn').addEventListener('click', () => {
-  game = new Chess();
-  moveAudit = [];
-  coachList.innerHTML = '';
-  drawBoard();
-});
-
-document.getElementById('saveBtn').addEventListener('click', async () => {
-  const result = game.isCheckmate() ? (game.turn() === 'w' ? 'lose' : 'win') : 'draw';
-  const mistakes = analyzeMistakes();
-  await api('/api/games', {
-    method: 'POST',
-    body: JSON.stringify({ mode, result, pgn: game.pgn(), mistakes, accuracy: Math.max(0, 100 - mistakes.length * 12) })
-  });
-  await loadHistory();
-  await loadLeaderboard();
-});
-
-document.getElementById('refreshBoardBtn').addEventListener('click', loadLeaderboard);
-
-document.getElementById('upgradeBtn').addEventListener('click', async () => {
-  if (!token) {
-    alert('Login first');
-    return;
-  }
-  const data = await api('/api/upgrade', { method: 'POST' });
-  alert(`Pro flow ready: ${data.checkoutUrl}`);
-});
-
-document.getElementById('drillBtn').addEventListener('click', () => {
-  let remaining = 60;
-  const status = document.getElementById('drillStatus');
-  status.textContent = `Time left: ${remaining}s`;
-  const interval = setInterval(() => {
-    remaining -= 1;
-    status.textContent = `Time left: ${remaining}s`;
-    if (remaining <= 0) {
-      clearInterval(interval);
-      status.textContent = 'Drill finished. Review your mistakes in AI Coach.';
+    if (left <= 0) {
+      clearInterval(state.drillInterval);
+      el.drillStatus.textContent = 'Drill ended. Save game to log performance.';
     }
   }, 1000);
-});
+}
+
+async function saveGame() {
+  if (!state.token) {
+    alert('Login first to save your game history.');
+    return;
+  }
+  const result = state.game.isCheckmate() ? (state.game.turn() === 'w' ? 'win' : 'loss') : 'draw';
+  const mistakes = analyzeMistakes(state.game.history({ verbose: true }));
+
+  await api('/api/games', {
+    method: 'POST',
+    body: JSON.stringify({
+      mode: state.mode,
+      pgn: state.game.pgn(),
+      result,
+      accuracy: Math.max(50, 100 - mistakes.length * 8),
+      mistakes: mistakes.map((m) => m.note)
+    })
+  });
+
+  await Promise.all([loadHistory(), loadLeaderboard()]);
+  el.roomStatus.textContent = 'Game saved ✔';
+}
 
 async function loadHistory() {
-  if (!token) return;
+  if (!state.token) return;
   const games = await api('/api/games');
-  historyEl.innerHTML = '';
-  for (const g of games) {
-    const li = document.createElement('li');
-    li.textContent = `${new Date(g.createdAt).toLocaleString()}: ${g.mode} | ${g.result} | accuracy ${g.accuracy ?? 'n/a'}%`;
-    historyEl.appendChild(li);
-  }
+  el.history.innerHTML = games.length
+    ? games.map(g => `<li><strong>${g.mode}</strong> · ${g.result} · ${new Date(g.createdAt).toLocaleString()}<br><code>${g.pgn.slice(0, 120)}...</code></li>`).join('')
+    : '<li>No saved games yet</li>';
 }
 
 async function loadLeaderboard() {
-  const rows = await api('/api/leaderboard');
-  leaderboardEl.innerHTML = '';
-  for (const row of rows) {
-    const li = document.createElement('li');
-    li.textContent = `${row.city}: ${row.wins} wins`;
-    leaderboardEl.appendChild(li);
+  const items = await api('/api/leaderboard');
+  el.leaderboard.innerHTML = items.length
+    ? items.map(i => `<li>${i.city}: <strong>${i.wins}</strong> wins</li>`).join('')
+    : '<li>No games yet</li>';
+}
+
+async function login() {
+  const name = el.nameInput.value.trim() || 'Player';
+  const city = el.cityInput.value.trim() || 'Unknown';
+  const data = await api('/api/auth/guest', {
+    method: 'POST',
+    body: JSON.stringify({ name, city })
+  });
+  state.token = data.token;
+  state.user = data.user;
+  localStorage.setItem('token', data.token);
+  el.authStatus.textContent = `Welcome, ${state.user.name} from ${state.user.city}`;
+  showApp();
+}
+
+function showApp() {
+  el.authPanel.classList.add('hidden');
+  renderBoard();
+  loadHistory();
+  loadLeaderboard();
+
+  const roomFromUrl = new URLSearchParams(location.search).get('room');
+  if (roomFromUrl) {
+    el.roomInput.value = roomFromUrl;
+    connectRoom(roomFromUrl);
   }
 }
 
-(function bootstrap() {
-  if (user && token) {
-    document.getElementById('authPanel').classList.add('hidden');
-    document.getElementById('app').classList.remove('hidden');
-    loadHistory();
-    loadLeaderboard();
+async function boot() {
+  const loaded = await ensureChessLoaded();
+  if (!loaded) {
+    el.status.textContent = "Could not load chess library. Use npm start and open localhost.";
+  }
+  ensureGame();
+  el.themeBtn.onclick = () => {
+    const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+    document.documentElement.dataset.theme = next;
+    localStorage.setItem('theme', next);
+  };
+
+  el.upgradeBtn.onclick = async () => {
+    if (!state.token) return alert('Login first');
+    const res = await api('/api/upgrade', { method: 'POST' });
+    alert(`${res.message}\n${res.checkoutUrl}`);
+  };
+
+  el.loginBtn.onclick = () => login().catch(e => (el.authStatus.textContent = e.message));
+  el.resetBtn.onclick = () => setMode(state.mode === 'multiplayer' ? 'multiplayer' : 'local');
+  el.saveBtn.onclick = () => saveGame().catch(e => (el.roomStatus.textContent = e.message));
+  el.refreshBoardBtn.onclick = () => loadLeaderboard();
+  el.drillBtn.onclick = () => startDrill(60);
+  el.createRoomBtn.onclick = () => {
+    const roomId = Math.random().toString(36).slice(2, 8);
+    el.roomInput.value = roomId;
+    connectRoom(roomId);
+  };
+  el.joinRoomBtn.onclick = () => {
+    const roomId = el.roomInput.value.trim();
+    if (roomId) connectRoom(roomId);
+  };
+
+  document.querySelectorAll('[data-mode]').forEach((btn) => {
+    btn.onclick = () => setMode(btn.dataset.mode);
+  });
+
+  if (state.token) {
+    try {
+      state.user = await api('/api/me');
+      showApp();
+    } catch {
+      localStorage.removeItem('token');
+      state.token = '';
+    }
   }
 
-  const params = new URLSearchParams(location.search);
-  const room = params.get('room');
-  if (room) {
-    document.getElementById('roomInput').value = room;
-  }
+  renderBoard();
+  loadLeaderboard();
+}
 
-  drawBoard();
-})();
+boot();

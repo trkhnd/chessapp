@@ -4,28 +4,39 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Grand Chess</title>
-    <link rel="stylesheet" href="/styles.css" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
     <script defer src="https://cdn.jsdelivr.net/npm/chess.js@1.4.0/dist/chess.min.js"></script>
-    <script defer src="/app.js"></script>
+    <script defer src="app.js"></script>
   </head>
   <body>
     <header>
-      <h1>♟ Grand Chess: Interview Edition</h1>
+      <div>
+        <p class="eyebrow">Startup-ready chess platform</p>
+        <h1>♟ Grand Chess: Interview Edition</h1>
+      </div>
       <div class="controls">
         <button id="themeBtn">🌙 / ☀️ Theme</button>
-        <button id="upgradeBtn">Upgrade to Pro</button>
+        <button id="upgradeBtn" class="pro-btn">Upgrade to Pro</button>
       </div>
     </header>
 
-    <section id="authPanel" class="card">
+    <section id="authPanel" class="card auth-card">
       <h2>Start in 10 seconds</h2>
-      <input id="nameInput" placeholder="Name" />
-      <input id="cityInput" placeholder="City (for leaderboard)" />
-      <button id="loginBtn">Enter Platform</button>
+      <div class="auth-grid">
+        <input id="nameInput" placeholder="Name" />
+        <input id="cityInput" placeholder="City (for leaderboard)" />
+        <button id="loginBtn">Enter Platform</button>
+      </div>
       <p id="authStatus"></p>
     </section>
 
-    <main class="layout hidden" id="app">
+    <main class="layout" id="app">
       <section class="card">
         <h3>Game Modes</h3>
         <div class="mode-grid">
@@ -35,12 +46,14 @@
         </div>
         <p id="roomStatus"></p>
         <label>Join room by link/code</label>
-        <input id="roomInput" placeholder="room-id" />
-        <button id="joinRoomBtn">Join Room</button>
+        <div class="join-row">
+          <input id="roomInput" placeholder="room-id" />
+          <button id="joinRoomBtn">Join Room</button>
+        </div>
       </section>
 
       <section class="card board-card">
-        <div id="status"></div>
+        <div id="status" class="status-pill"></div>
         <div id="board" class="board"></div>
         <div class="actions">
           <button id="resetBtn">New game</button>
